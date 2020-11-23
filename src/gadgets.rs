@@ -2,14 +2,14 @@
 //! circuits.
 use crate::{
     arithmetic::Field,
-    plonk::{AdviceWire, ConstraintSystem, Error, FixedWire, MetaCircuit},
+    plonk::{Column, Advice, Fixed, ConstraintSystem, Assignment, Error},
 };
 
 pub mod num;
 
-/// Represents an advice wire somewhere
+/// Represents an advice column somewhere
 #[derive(Copy, Clone, Debug)]
-pub struct Variable(AdviceWire, usize);
+pub struct Variable(Column<Advice>, usize);
 
 /// This is a backend for circuit synthesis which supports copy constraint
 /// enforcement and raw addition / multiplication operations.
@@ -54,36 +54,36 @@ impl<'a, FF: Field, T: StandardCS<FF>> StandardCS<FF> for &'a mut T {
     }
 }
 
-/// This is a standard circuit configuration with A, B, C wires and
+/// This is a standard circuit configuration with A, B, C columns and
 /// addition/multiplication support.
 #[derive(Debug)]
 #[allow(missing_docs)]
 pub struct StandardConfig {
-    pub a: AdviceWire,
-    pub b: AdviceWire,
-    pub c: AdviceWire,
+    pub a: Column<Advice>,
+    pub b: Column<Advice>,
+    pub c: Column<Advice>,
 
-    pub sa: FixedWire,
-    pub sb: FixedWire,
-    pub sc: FixedWire,
-    pub sm: FixedWire,
+    pub sa: Column<Fixed>,
+    pub sb: Column<Fixed>,
+    pub sc: Column<Fixed>,
+    pub sm: Column<Fixed>,
 
     pub perm: usize,
 }
 
 impl StandardConfig {
     /// Initialize this circuit configuration
-    pub fn new<F: Field>(meta: &mut MetaCircuit<F>) -> Self {
-        let a = meta.advice_wire();
-        let b = meta.advice_wire();
-        let c = meta.advice_wire();
+    pub fn new<F: Field>(meta: &mut ConstraintSystem<F>) -> Self {
+        let a = meta.advice_column();
+        let b = meta.advice_column();
+        let c = meta.advice_column();
 
         let perm = meta.permutation(&[a, b, c]);
 
-        let sm = meta.fixed_wire();
-        let sa = meta.fixed_wire();
-        let sb = meta.fixed_wire();
-        let sc = meta.fixed_wire();
+        let sm = meta.fixed_column();
+        let sa = meta.fixed_column();
+        let sb = meta.fixed_column();
+        let sc = meta.fixed_column();
 
         meta.create_gate(|meta| {
             let a = meta.query_advice(a, 0);
@@ -114,15 +114,15 @@ impl StandardConfig {
 /// Standard constraint system synthesizer
 #[derive(Debug)]
 #[allow(missing_docs)]
-pub struct Standard<'a, F: Field, CS: ConstraintSystem<F>> {
+pub struct Standard<'a, F: Field, CS: Assignment<F>> {
     pub cs: &'a mut CS,
     pub config: StandardConfig,
     current_gate: usize,
-    alloc_gate: Option<(AdviceWire, usize)>,
+    alloc_gate: Option<(Column<Advice>, usize)>,
     _marker: std::marker::PhantomData<F>,
 }
 
-impl<'a, F: Field, CS: ConstraintSystem<F>> Standard<'a, F, CS> {
+impl<'a, F: Field, CS: Assignment<F>> Standard<'a, F, CS> {
     /// Create a new synthesis backend for the standard configuration
     pub fn new(cs: &'a mut CS, config: StandardConfig) -> Self {
         Standard {
@@ -135,7 +135,7 @@ impl<'a, F: Field, CS: ConstraintSystem<F>> Standard<'a, F, CS> {
     }
 }
 
-impl<'a, F: Field, CS: ConstraintSystem<F>> StandardCS<F> for Standard<'a, F, CS> {
+impl<'a, F: Field, CS: Assignment<F>> StandardCS<F> for Standard<'a, F, CS> {
     fn raw_multiply<FF>(&mut self, f: FF) -> Result<(Variable, Variable, Variable), Error>
     where
         FF: FnOnce() -> Result<(F, F, F), Error>,
@@ -202,13 +202,13 @@ impl<'a, F: Field, CS: ConstraintSystem<F>> StandardCS<F> for Standard<'a, F, CS
         ))
     }
     fn copy(&mut self, left: Variable, right: Variable) -> Result<(), Error> {
-        let left_wire = match left.0 {
+        let left_column = match left.0 {
             x if x == self.config.a => 0,
             x if x == self.config.b => 1,
             x if x == self.config.c => 2,
             _ => unreachable!(),
         };
-        let right_wire = match right.0 {
+        let right_column = match right.0 {
             x if x == self.config.a => 0,
             x if x == self.config.b => 1,
             x if x == self.config.c => 2,
@@ -216,7 +216,7 @@ impl<'a, F: Field, CS: ConstraintSystem<F>> StandardCS<F> for Standard<'a, F, CS
         };
 
         self.cs
-            .copy(self.config.perm, left_wire, left.1, right_wire, right.1)
+            .copy(self.config.perm, left_column, left.1, right_column, right.1)
     }
     fn alloc<FF>(&mut self, f: FF) -> Result<Variable, Error>
     where
@@ -228,27 +228,27 @@ impl<'a, F: Field, CS: ConstraintSystem<F>> StandardCS<F> for Standard<'a, F, CS
                 let row = self.current_gate;
                 self.current_gate += 1;
                 self.cs.assign_advice(self.config.a, row, f)?;
-                ret = Variable(AdviceWire(0), row);
-                (AdviceWire(1), row)
+                ret = Variable(Column::new(0, Advice), row);
+                (Column::new(1, Advice), row)
             }
-            &Some((wire, row)) if wire.0 == 0 => {
+            &Some((column, row)) if column.index() == 0 => {
                 self.cs.assign_advice(self.config.a, row, f)?;
-                ret = Variable(wire, row);
-                (AdviceWire(1), row)
+                ret = Variable(column, row);
+                (Column::new(1, Advice), row)
             }
-            &Some((wire, row)) if wire.0 == 1 => {
+            &Some((column, row)) if column.index() == 1 => {
                 self.cs.assign_advice(self.config.b, row, f)?;
-                ret = Variable(wire, row);
-                (AdviceWire(2), row)
+                ret = Variable(column, row);
+                (Column::new(2, Advice), row)
             }
-            &Some((wire, row)) if wire.0 == 2 => {
+            &Some((column, row)) if column.index() == 2 => {
                 self.cs.assign_advice(self.config.c, row, f)?;
-                ret = Variable(wire, row);
+                ret = Variable(column, row);
                 let row = self.current_gate;
                 self.current_gate += 1;
-                (AdviceWire(0), row)
+                (Column::new(0, Advice), row)
             }
-            _ => panic!("unexpected wire"),
+            _ => panic!("unexpected column"),
         };
 
         self.alloc_gate = Some(newval);

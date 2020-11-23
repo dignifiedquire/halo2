@@ -25,6 +25,13 @@ impl<C: ColumnType> Column<C> {
     pub(crate) fn column_type(&self) -> &C {
         &self.column_type
     }
+
+    pub(crate) fn new(index: usize, column_type: C) -> Self {
+        Self {
+            index,
+            column_type,
+        }
+    }
 }
 
 /// An advice column

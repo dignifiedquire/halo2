@@ -2,8 +2,9 @@ use halo2::arithmetic::*;
 use halo2::gadgets::num::*;
 use halo2::gadgets::*;
 use halo2::plonk::*;
-use halo2::poly::commitment::*;
+use halo2::poly::commitment::Params;
 use halo2::transcript::*;
+use halo2::tweedle::*;
 struct SpendCircuit<F> {
     x: Option<F>,
 }
@@ -13,13 +14,13 @@ use std::time::Instant;
 impl<F: Field> Circuit<F> for SpendCircuit<F> {
     type Config = StandardConfig;
 
-    fn configure(meta: &mut MetaCircuit<F>) -> StandardConfig {
+    fn configure(meta: &mut ConstraintSystem<F>) -> StandardConfig {
         StandardConfig::new(meta)
     }
 
     fn synthesize(
         &self,
-        cs: &mut impl ConstraintSystem<F>,
+        cs: &mut impl Assignment<F>,
         config: StandardConfig,
     ) -> Result<(), Error> {
         let mut cs = Standard::new(cs, config);
@@ -41,11 +42,11 @@ fn main() {
     println!("Initializing polynomial commitment parameters");
     let params: Params<EqAffine> = Params::new::<DummyHash<Fq>>(K);
 
-    let empty_circuit = SpendCircuit { x: None };
+    let empty_circuit: SpendCircuit<Fp> = SpendCircuit { x: None };
 
     // Initialize the SRS
-    println!("Initializing SRS");
-    let srs = SRS::generate(&params, &empty_circuit).expect("SRS generation should not fail");
+    println!("Keygeneration");
+    let pk = keygen(&params, &empty_circuit).expect("keygen should not fail");
 
     // Create a proof
     {
@@ -55,14 +56,36 @@ fn main() {
 
         println!("Creating proof");
         let start = Instant::now();
-        let proof = Proof::create::<DummyHash<Fq>, DummyHash<Fp>, _>(&params, &srs, &circuit)
-            .expect("proof generation should not fail");
+        let proof = Proof::create::<DummyHash<Fq>, DummyHash<Fp>, _>(
+            &params,
+            &pk,
+            &circuit,
+            &[],
+        ).expect("proof generation should not fail");
         let elapsed = start.elapsed();
         println!("Proof created in {:?}", elapsed);
 
+
+        let msm = params.empty_msm();
+        
         println!("Verifying proof");
         let start = Instant::now();
-        assert!(proof.verify::<DummyHash<Fq>, DummyHash<Fp>>(&params, &srs));
+        let guard = proof.verify::<DummyHash<Fq>, DummyHash<Fp>>(
+            &params,
+            &pk.get_vk(),
+            msm,
+            &[],
+        ).expect("proof verifiation should not fail");
+        // TODO: is this the right check?
+        {
+            let msm = guard.clone().use_challenges();
+            assert!(msm.eval());
+        }
+        {
+            let g = guard.compute_g();
+            let (msm, _) = guard.clone().use_g(g);
+            assert!(msm.eval());
+        }
         let elapsed = start.elapsed();
         println!("Proof verified in {:?}", elapsed);
     }
